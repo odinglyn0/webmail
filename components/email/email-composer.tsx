@@ -32,7 +32,7 @@ import { TemplatePicker } from "@/components/templates/template-picker";
 import { TemplateForm } from "@/components/templates/template-form";
 import type { EmailTemplate } from "@/lib/template-types";
 import { appendPlainTextSignature, getPlainTextSignature } from "@/lib/signature-utils";
-import { findReplyIdentityId } from "@/lib/reply-identity";
+import { resolveReplyFrom } from "@/lib/reply-identity";
 import { computeReplyThreadingHeaders } from "@/lib/email-threading";
 import { RichTextEditor } from "@/components/email/rich-text-editor";
 
@@ -55,6 +55,10 @@ export interface ComposerDraftData {
   mode: 'compose' | 'reply' | 'replyAll' | 'forward';
   replyTo?: EmailComposerProps['replyTo'];
   draftId: string | null;
+  /** When set, overrides the header From: — sent through the selected identity's envelope. */
+  fromOverrideEmail?: string;
+  fromOverrideName?: string;
+  fromOverrideEnabled?: boolean;
 }
 
 interface EmailComposerProps {
@@ -69,6 +73,7 @@ interface EmailComposerProps {
     fromEmail?: string;
     fromName?: string;
     identityId?: string;
+    envelopeMailFrom?: string;
     attachments?: Array<{ blobId: string; name: string; type: string; size: number; disposition?: 'attachment' | 'inline'; cid?: string }>;
     inReplyTo?: string[];
     references?: string[];
@@ -245,6 +250,9 @@ export function EmailComposer({
   const [shakeField, setShakeField] = useState<string | null>(null);
   const [selectedIdentityId, setSelectedIdentityId] = useState<string | null>(initialData?.selectedIdentityId ?? null);
   const [subAddressTag, setSubAddressTag] = useState<string>(initialData?.subAddressTag ?? '');
+  const [fromOverrideEnabled, setFromOverrideEnabled] = useState<boolean>(initialData?.fromOverrideEnabled ?? false);
+  const [fromOverrideEmail, setFromOverrideEmail] = useState<string>(initialData?.fromOverrideEmail ?? '');
+  const [fromOverrideName, setFromOverrideName] = useState<string>(initialData?.fromOverrideName ?? '');
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
   const [showSaveAsTemplate, setShowSaveAsTemplate] = useState(false);
   const [showCloseDialog, setShowCloseDialog] = useState(false);
@@ -292,14 +300,19 @@ export function EmailComposer({
     if (selectedIdentityId || initialData?.selectedIdentityId) return;
     if (mode !== 'reply' && mode !== 'replyAll') return;
 
-    const matchedIdentityId = findReplyIdentityId(identities, {
+    const resolved = resolveReplyFrom(identities, {
       to: replyTo?.to,
       cc: replyTo?.cc,
       bcc: replyTo?.bcc,
     });
 
-    if (matchedIdentityId) {
-      setSelectedIdentityId(matchedIdentityId);
+    if (resolved) {
+      setSelectedIdentityId(resolved.identityId);
+      if (resolved.overrideEmail && !fromOverrideEnabled) {
+        setFromOverrideEnabled(true);
+        setFromOverrideEmail(resolved.overrideEmail);
+        if (resolved.overrideName) setFromOverrideName(resolved.overrideName);
+      }
       return;
     }
 
@@ -318,6 +331,7 @@ export function EmailComposer({
     }
   }, [
     autoSelectReplyIdentity,
+    fromOverrideEnabled,
     identities,
     initialData?.selectedIdentityId,
     mode,
@@ -367,8 +381,8 @@ export function EmailComposer({
   }, [currentSmimeIdentityId]);
 
   // Keep a ref to current state for the unmount save
-  const stateRef = useRef({ to, cc, bcc, subject, body, showCc, showBcc, selectedIdentityId, subAddressTag, draftId });
-  stateRef.current = { to, cc, bcc, subject, body, showCc, showBcc, selectedIdentityId, subAddressTag, draftId };
+  const stateRef = useRef({ to, cc, bcc, subject, body, showCc, showBcc, selectedIdentityId, subAddressTag, draftId, fromOverrideEnabled, fromOverrideEmail, fromOverrideName });
+  stateRef.current = { to, cc, bcc, subject, body, showCc, showBcc, selectedIdentityId, subAddressTag, draftId, fromOverrideEnabled, fromOverrideEmail, fromOverrideName };
 
   // Track initial values for dirty detection (captured once on first render)
   const initialValuesRef = useRef({ to, cc, bcc, subject, body, attachmentCount: attachments.length });
@@ -761,11 +775,17 @@ export function EmailComposer({
 
     // Get the selected identity or primary identity
     // Generate sub-addressed email if tag is set
-    const fromEmail = currentIdentity?.email
+    const identityFromEmail = currentIdentity?.email
       ? subAddressTag
         ? generateSubAddress(currentIdentity.email, subAddressTag, subAddressDelimiter)
         : currentIdentity.email
       : undefined;
+    const fromEmail = (fromOverrideEnabled && fromOverrideEmail.trim())
+      ? fromOverrideEmail.trim()
+      : identityFromEmail;
+    const fromName = (fromOverrideEnabled && fromOverrideEmail.trim())
+      ? (fromOverrideName.trim() || undefined)
+      : (currentIdentity?.name || undefined);
 
     try {
       const savedDraftId = await client.createDraft(
@@ -778,7 +798,7 @@ export function EmailComposer({
         fromEmail,
         draftId || undefined,
         uploadedAttachments,
-        currentIdentity?.name || undefined,
+        fromName,
         plainTextMode ? undefined : body
       );
 
@@ -951,11 +971,21 @@ export function EmailComposer({
       }
     }
 
-    const fromEmail = currentIdentity?.email
+    const identityFromEmail = currentIdentity?.email
       ? subAddressTag
         ? generateSubAddress(currentIdentity.email, subAddressTag, subAddressDelimiter)
         : currentIdentity.email
       : undefined;
+    // When the user has typed a From override, that becomes the header From
+    // (and MIME-builder From in the S/MIME path). The identity still drives
+    // the SMTP envelope MAIL FROM — set explicitly so it doesn't mistakenly
+    // default to the override address.
+    const overrideActive = fromOverrideEnabled && fromOverrideEmail.trim().length > 0;
+    const fromEmail = overrideActive ? fromOverrideEmail.trim() : identityFromEmail;
+    const fromName = overrideActive
+      ? (fromOverrideName.trim() || undefined)
+      : (currentIdentity?.name || undefined);
+    const envelopeMailFrom = overrideActive ? identityFromEmail : undefined;
 
     // Body is already HTML from the rich text editor (or plain text in plain text mode).
     // Build HTML signature block (used only in rich text mode)
@@ -1011,6 +1041,12 @@ export function EmailComposer({
         // 1. Resolve S/MIME key
         if (smimeSign_ && !smimeKeyRecord) {
           throw new Error('No S/MIME key bound to this identity');
+        }
+        // S/MIME binds to the identity's key; sending from an override address
+        // would produce a signature whose Subject differs from the visible
+        // From, which most clients reject or flag. Refuse up front.
+        if (overrideActive) {
+          throw new Error('Cannot use From override with S/MIME — disable one to send.');
         }
 
         // 2. Ensure key is unlocked for signing
@@ -1156,8 +1192,9 @@ export function EmailComposer({
           htmlBody: outgoing.htmlBody || undefined,
           draftId: finalDraftId || undefined,
           fromEmail,
-          fromName: currentIdentity?.name || undefined,
+          fromName,
           identityId: outgoing.identityId || currentIdentity?.id,
+          envelopeMailFrom,
           attachments: uploadedAttachments.length > 0 ? uploadedAttachments : undefined,
           inReplyTo: threadingHeaders?.inReplyTo,
           references: threadingHeaders?.references,
@@ -1185,7 +1222,7 @@ export function EmailComposer({
       setSubAddressTag("");
       setValidationErrors({});
       // Clear ref so unmount effect doesn't re-save
-      stateRef.current = { to: '', cc: '', bcc: '', subject: '', body: '', showCc: false, showBcc: false, selectedIdentityId: null, subAddressTag: '', draftId: null };
+      stateRef.current = { to: '', cc: '', bcc: '', subject: '', body: '', showCc: false, showBcc: false, selectedIdentityId: null, subAddressTag: '', draftId: null, fromOverrideEnabled: false, fromOverrideEmail: '', fromOverrideName: '' };
     } catch (err) {
       debug.error('Failed to send email:', err);
       toast.error(t('send_failed'));
@@ -1196,7 +1233,7 @@ export function EmailComposer({
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current);
     }
-    stateRef.current = { to: '', cc: '', bcc: '', subject: '', body: '', showCc: false, showBcc: false, selectedIdentityId: null, subAddressTag: '', draftId: null };
+    stateRef.current = { to: '', cc: '', bcc: '', subject: '', body: '', showCc: false, showBcc: false, selectedIdentityId: null, subAddressTag: '', draftId: null, fromOverrideEnabled: false, fromOverrideEmail: '', fromOverrideName: '' };
     onClose?.();
   };
 
@@ -1206,7 +1243,7 @@ export function EmailComposer({
       clearTimeout(saveTimeoutRef.current);
     }
     await saveDraft();
-    stateRef.current = { to: '', cc: '', bcc: '', subject: '', body: '', showCc: false, showBcc: false, selectedIdentityId: null, subAddressTag: '', draftId: null };
+    stateRef.current = { to: '', cc: '', bcc: '', subject: '', body: '', showCc: false, showBcc: false, selectedIdentityId: null, subAddressTag: '', draftId: null, fromOverrideEnabled: false, fromOverrideEmail: '', fromOverrideName: '' };
     onClose?.();
   };
 
@@ -1218,7 +1255,7 @@ export function EmailComposer({
     if (draftId && onDiscardDraft) {
       onDiscardDraft(draftId);
     }
-    stateRef.current = { to: '', cc: '', bcc: '', subject: '', body: '', showCc: false, showBcc: false, selectedIdentityId: null, subAddressTag: '', draftId: null };
+    stateRef.current = { to: '', cc: '', bcc: '', subject: '', body: '', showCc: false, showBcc: false, selectedIdentityId: null, subAddressTag: '', draftId: null, fromOverrideEnabled: false, fromOverrideEmail: '', fromOverrideName: '' };
     onClose?.();
   };
 
@@ -1302,7 +1339,25 @@ export function EmailComposer({
           <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border/50">
             <span className="text-sm text-muted-foreground w-12 md:w-16 shrink-0">{t('from')}:</span>
             <div className="flex-1 flex items-center gap-1 min-w-0">
-              {identities.length > 1 ? (
+              {fromOverrideEnabled ? (
+                <div className="flex-1 flex items-center gap-1 min-w-0">
+                  <Input
+                    value={fromOverrideName}
+                    onChange={(e) => setFromOverrideName(e.target.value)}
+                    placeholder={t('from_override.name_placeholder')}
+                    className="h-7 text-sm w-32 md:w-40 shrink-0"
+                    aria-label={t('from_override.name_label')}
+                  />
+                  <Input
+                    value={fromOverrideEmail}
+                    onChange={(e) => setFromOverrideEmail(e.target.value)}
+                    placeholder={t('from_override.email_placeholder')}
+                    type="email"
+                    className="h-7 text-sm flex-1 min-w-0 font-mono"
+                    aria-label={t('from_override.email_label')}
+                  />
+                </div>
+              ) : identities.length > 1 ? (
                 <select
                   value={selectedIdentityId || primaryIdentity?.id || ''}
                   onChange={(e) => setSelectedIdentityId(e.target.value)}
@@ -1334,16 +1389,18 @@ export function EmailComposer({
                   )}
                 </span>
               )}
-              <SubAddressHelper
-                baseEmail={
-                  (selectedIdentityId
-                    ? identities.find(id => id.id === selectedIdentityId)?.email
-                    : primaryIdentity?.email) || ''
-                }
-                recipientEmails={to.split(',').map(e => e.trim()).filter(Boolean)}
-                onSelectTag={setSubAddressTag}
-              />
-              {subAddressTag && (
+              {!fromOverrideEnabled && (
+                <SubAddressHelper
+                  baseEmail={
+                    (selectedIdentityId
+                      ? identities.find(id => id.id === selectedIdentityId)?.email
+                      : primaryIdentity?.email) || ''
+                  }
+                  recipientEmails={to.split(',').map(e => e.trim()).filter(Boolean)}
+                  onSelectTag={setSubAddressTag}
+                />
+              )}
+              {!fromOverrideEnabled && subAddressTag && (
                 <Button
                   type="button"
                   variant="ghost"
@@ -1355,6 +1412,28 @@ export function EmailComposer({
                   <X className="w-3 h-3" />
                 </Button>
               )}
+              <Button
+                type="button"
+                variant={fromOverrideEnabled ? 'outline' : 'ghost'}
+                size="sm"
+                onClick={() => {
+                  if (fromOverrideEnabled) {
+                    setFromOverrideEnabled(false);
+                  } else {
+                    setFromOverrideEnabled(true);
+                    if (!fromOverrideEmail && currentIdentity?.email) {
+                      setFromOverrideEmail(currentIdentity.email);
+                    }
+                    if (!fromOverrideName && currentIdentity?.name) {
+                      setFromOverrideName(currentIdentity.name);
+                    }
+                  }
+                }}
+                className="h-6 px-2 text-xs shrink-0"
+                title={t('from_override.toggle_tooltip')}
+              >
+                {fromOverrideEnabled ? t('from_override.toggle_on') : t('from_override.toggle_off')}
+              </Button>
             </div>
           </div>
 

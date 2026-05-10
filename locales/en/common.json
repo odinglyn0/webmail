@@ -531,6 +531,15 @@
       "to": "To: {recipients}"
     },
     "remove_sub_address": "Remove sub-address",
+    "from_override": {
+      "toggle_off": "Override",
+      "toggle_on": "Cancel override",
+      "toggle_tooltip": "Edit the From name and address freely. Mail is still sent through your identity — only the visible From header changes.",
+      "name_label": "From name",
+      "name_placeholder": "Name",
+      "email_label": "From email address",
+      "email_placeholder": "alias@example.com"
+    },
     "use_template": "Template",
     "save_as_template": "Save as Template",
     "validation": {
@@ -960,8 +969,8 @@
         "description": "Disable the rich text editor and send all emails as plain text only, including replies and forwards"
       },
       "auto_select_reply_identity": {
-        "label": "Auto-select Reply Address",
-        "description": "When replying, automatically switch the From address to the identity that originally received the message"
+        "label": "Reply From Received Address",
+        "description": "When replying, send from the address the message was originally sent to. Matches identities first; for domain catch-all deliveries, rewrites the From header to the alias while sending through your primary identity."
       },
       "sub_address_delimiter": {
         "label": "Sub-Address Delimiter",

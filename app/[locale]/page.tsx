@@ -53,6 +53,7 @@ import { FilePreviewModal } from "@/components/files/file-preview-modal";
 import { isFilePreviewable } from "@/lib/file-preview";
 import { appendPlainTextSignature } from "@/lib/signature-utils";
 import { computeReplyThreadingHeaders } from "@/lib/email-threading";
+import { resolveReplyFrom } from "@/lib/reply-identity";
 import { Search, Filter, ChevronDown, X, Paperclip, Star, Mail, MailOpen, RotateCcw, PenSquare, PenLine, CheckSquare, Square, AlertTriangle } from "lucide-react";
 import { ResizeHandle } from "@/components/layout/resize-handle";
 import { Button } from "@/components/ui/button";
@@ -875,6 +876,7 @@ export default function Home() {
     fromEmail?: string;
     fromName?: string;
     identityId?: string;
+    envelopeMailFrom?: string;
     attachments?: Array<{ blobId: string; name: string; type: string; size: number; disposition?: 'attachment' | 'inline'; cid?: string }>;
     inReplyTo?: string[];
     references?: string[];
@@ -885,7 +887,7 @@ export default function Home() {
       const effectiveMode = pendingDraft?.mode ?? composerMode;
       const originalEmailId = selectedEmail?.id;
 
-      await sendEmail(client, data.to, data.subject, data.body, data.cc, data.bcc, data.identityId, data.fromEmail, data.draftId, data.fromName, data.htmlBody, data.attachments, data.inReplyTo, data.references);
+      await sendEmail(client, data.to, data.subject, data.body, data.cc, data.bcc, data.identityId, data.fromEmail, data.draftId, data.fromName, data.htmlBody, data.attachments, data.inReplyTo, data.references, data.envelopeMailFrom);
       setShowComposer(false);
 
       // Mark the original email with $answered or $forwarded keyword
@@ -1641,9 +1643,28 @@ export default function Home() {
     }
 
     const primaryIdentity = identities[0];
+    const autoSelectReplyIdentity = useSettingsStore.getState().autoSelectReplyIdentity;
 
-    // Append signature from the primary identity
-    const finalBody = appendPlainTextSignature(body, primaryIdentity);
+    // Decide the sending identity and (for domain-catch-all) an optional
+    // header From override that matches the address the message was sent to.
+    // When the setting is off, fall through to primary-identity behavior.
+    const resolved = autoSelectReplyIdentity
+      ? resolveReplyFrom(identities, {
+          to: selectedEmail.to,
+          cc: selectedEmail.cc,
+          bcc: selectedEmail.bcc,
+        })
+      : null;
+    const sendingIdentity = resolved
+      ? (identities.find((i) => i.id === resolved.identityId) || primaryIdentity)
+      : primaryIdentity;
+    const headerFromEmail = resolved?.overrideEmail || sendingIdentity?.email;
+    const headerFromName = resolved?.overrideName || sendingIdentity?.name || undefined;
+    const envelopeMailFrom = resolved?.overrideEmail ? sendingIdentity?.email : undefined;
+
+    // Append signature from the sending identity (fall back to primary
+    // when the reply-from lives on the same identity but a different alias).
+    const finalBody = appendPlainTextSignature(body, sendingIdentity);
 
     const originalEmailId = selectedEmail.id;
 
@@ -1661,14 +1682,15 @@ export default function Home() {
       finalBody,
       undefined,
       undefined,
-      primaryIdentity?.id,
-      primaryIdentity?.email,
+      sendingIdentity?.id,
+      headerFromEmail,
       undefined,
-      primaryIdentity?.name || undefined,
+      headerFromName,
       undefined,
       undefined,
       threading?.inReplyTo,
       threading?.references,
+      envelopeMailFrom,
     );
 
     // Mark the original email as answered

@@ -75,7 +75,7 @@ interface EmailStore {
   loadMoreEmails: (client: IJMAPClient) => Promise<void>;
   fetchEmailContent: (client: IJMAPClient, emailId: string) => Promise<Email | null>;
   fetchQuota: (client: IJMAPClient) => Promise<void>;
-  sendEmail: (client: IJMAPClient, to: string[], subject: string, body: string, cc?: string[], bcc?: string[], identityId?: string, fromEmail?: string, draftId?: string, fromName?: string, htmlBody?: string, attachments?: Array<{ blobId: string; name: string; type: string; size: number; disposition?: 'attachment' | 'inline'; cid?: string }>, inReplyTo?: string[], references?: string[]) => Promise<void>;
+  sendEmail: (client: IJMAPClient, to: string[], subject: string, body: string, cc?: string[], bcc?: string[], identityId?: string, fromEmail?: string, draftId?: string, fromName?: string, htmlBody?: string, attachments?: Array<{ blobId: string; name: string; type: string; size: number; disposition?: 'attachment' | 'inline'; cid?: string }>, inReplyTo?: string[], references?: string[], envelopeMailFrom?: string) => Promise<void>;
   sendRawEmail: (client: IJMAPClient, rawMimeBlob: Blob, identityId: string) => Promise<void>;
   deleteEmail: (client: IJMAPClient, emailId: string, forceDelete?: boolean) => Promise<void>;
   markAsRead: (client: IJMAPClient, emailId: string, read: boolean) => Promise<void>;
@@ -534,10 +534,10 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
     }
   },
 
-  sendEmail: async (client, to, subject, body, cc, bcc, identityId, fromEmail, draftId, fromName, htmlBody, attachments, inReplyTo, references) => {
+  sendEmail: async (client, to, subject, body, cc, bcc, identityId, fromEmail, draftId, fromName, htmlBody, attachments, inReplyTo, references, envelopeMailFrom) => {
     set({ isLoading: true, error: null });
     try {
-      await client.sendEmail(to, subject, body, cc, bcc, identityId, fromEmail, draftId, fromName, htmlBody, attachments, inReplyTo, references);
+      await client.sendEmail(to, subject, body, cc, bcc, identityId, fromEmail, draftId, fromName, htmlBody, attachments, inReplyTo, references, envelopeMailFrom);
       // Refresh handled by UI layer for immediate feedback
       set({ isLoading: false });
     } catch (error) {

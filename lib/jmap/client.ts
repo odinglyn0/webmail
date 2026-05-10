@@ -2089,7 +2089,8 @@ export class JMAPClient implements IJMAPClient {
     htmlBody?: string,
     attachments?: Array<{ blobId: string; name: string; type: string; size: number; disposition?: 'attachment' | 'inline'; cid?: string }>,
     inReplyTo?: string[],
-    references?: string[]
+    references?: string[],
+    envelopeMailFrom?: string
   ): Promise<void> {
     const emailId = `send-${Date.now()}`;
     const mailboxes = await this.getMailboxes();
@@ -2185,6 +2186,21 @@ export class JMAPClient implements IJMAPClient {
       },
     };
 
+    // When an explicit envelope MAIL FROM is provided (header From ≠ envelope,
+    // e.g. sending from a domain-catch-all alias without a dedicated Identity),
+    // set the EmailSubmission envelope explicitly. JMAP §7.3: when `envelope`
+    // is omitted the server derives mailFrom from the Identity.
+    const submissionCreate = (submissionId: string): Record<string, unknown> => {
+      const create: Record<string, unknown> = { emailId: `#${emailId}`, identityId: finalIdentityId };
+      if (envelopeMailFrom) {
+        create.envelope = {
+          mailFrom: { email: envelopeMailFrom },
+          rcptTo: [...to, ...(cc || []), ...(bcc || [])].map((email) => ({ email })),
+        };
+      }
+      return { [submissionId]: create };
+    };
+
     if (draftId) {
       // Destroy the old draft and create a new email with the final body
       methodCalls.push(["Email/set", {
@@ -2197,7 +2213,7 @@ export class JMAPClient implements IJMAPClient {
       }, "1"]);
       methodCalls.push(["EmailSubmission/set", {
         accountId: this.accountId,
-        create: { "1": { emailId: `#${emailId}`, identityId: finalIdentityId } },
+        create: submissionCreate("1"),
         onSuccessUpdateEmail,
       }, "2"]);
     } else {
@@ -2207,7 +2223,7 @@ export class JMAPClient implements IJMAPClient {
       }, "0"]);
       methodCalls.push(["EmailSubmission/set", {
         accountId: this.accountId,
-        create: { "1": { emailId: `#${emailId}`, identityId: finalIdentityId } },
+        create: submissionCreate("1"),
         onSuccessUpdateEmail,
       }, "1"]);
     }
