@@ -129,8 +129,8 @@ export function EmailListItem({ email, selected, onClick, onContextMenu, onToggl
       style={{ minHeight: isFocusedMailLayout ? undefined : 'var(--list-item-height)' }}
     >
       <div
-        className={cn('px-4', isFocusedMailLayout ? 'flex items-center py-2.5' : 'flex items-start')}
-        style={isFocusedMailLayout ? { gap: '12px' } : { gap: 'var(--density-item-gap)', paddingBlock: 'var(--density-item-py)' }}
+        className={cn('px-4', isFocusedMailLayout ? 'flex items-center' : 'flex items-start')}
+        style={{ gap: 'var(--density-item-gap)', paddingBlock: 'var(--density-item-py)' }}
       >
         {/* Checkbox - only visible when in selection mode */}
         {selectedEmailIds.size > 0 && (
@@ -161,11 +161,11 @@ export function EmailListItem({ email, selected, onClick, onContextMenu, onToggl
         )}
 
         {/* Avatar */}
-        {!isFocusedMailLayout && density !== 'extra-compact' && (
+        {density !== 'extra-compact' && (
           <Avatar
             name={sender?.name}
             email={sender?.email}
-            size="md"
+            size={isFocusedMailLayout ? "sm" : "md"}
             className="flex-shrink-0 shadow-sm"
             disableImages={hideJunkAvatarImages}
           />

@@ -149,8 +149,8 @@ const SingleEmailItem = React.forwardRef<HTMLDivElement, SingleEmailItemProps>(
         style={{ minHeight: isFocusedMailLayout ? undefined : 'var(--list-item-height)' }}
       >
         <div
-          className={cn('px-3', isFocusedMailLayout ? 'flex items-center py-2.5' : 'flex items-start')}
-          style={isFocusedMailLayout ? { gap: '12px' } : { gap: 'var(--density-item-gap)', paddingBlock: 'var(--density-item-py)' }}
+          className={cn('px-3', isFocusedMailLayout ? 'flex items-center' : 'flex items-start')}
+          style={{ gap: 'var(--density-item-gap)', paddingBlock: 'var(--density-item-py)' }}
         >
           {/* Checkbox - only visible when in selection mode */}
           {selectedEmailIds.size > 0 && (
@@ -179,11 +179,11 @@ const SingleEmailItem = React.forwardRef<HTMLDivElement, SingleEmailItemProps>(
             </div>
           )}
 
-          {!isFocusedMailLayout && density !== 'extra-compact' && (
+          {density !== 'extra-compact' && (
             <Avatar
               name={sender?.name}
               email={sender?.email}
-              size="md"
+              size={isFocusedMailLayout ? "sm" : "md"}
               className="flex-shrink-0 shadow-sm"
               disableImages={hideJunkAvatarImages}
             />
@@ -508,8 +508,8 @@ export const ThreadListItem = React.forwardRef<HTMLDivElement, ThreadListItemPro
           style={{ minHeight: isFocusedMailLayout ? undefined : 'var(--list-item-height)' }}
         >
           <div
-            className={cn('px-3', isFocusedMailLayout ? 'flex items-center py-2.5' : 'flex items-start')}
-            style={isFocusedMailLayout ? { gap: '12px' } : { gap: 'var(--density-item-gap)', paddingBlock: 'var(--density-item-py)' }}
+            className={cn('px-3', isFocusedMailLayout ? 'flex items-center' : 'flex items-start')}
+            style={{ gap: 'var(--density-item-gap)', paddingBlock: 'var(--density-item-py)' }}
           >
             {/* Checkbox for thread selection - only visible when in selection mode */}
             {selectedEmailIds.size > 0 && (
@@ -564,11 +564,11 @@ export const ThreadListItem = React.forwardRef<HTMLDivElement, ThreadListItemPro
               </div>
             )}
 
-            {!isFocusedMailLayout && density !== 'extra-compact' && (
+            {density !== 'extra-compact' && (
               <Avatar
                 name={avatarPerson?.name}
                 email={avatarPerson?.email}
-                size="md"
+                size={isFocusedMailLayout ? "sm" : "md"}
                 className="flex-shrink-0 shadow-sm"
                 disableImages={hideJunkAvatarImages}
               />
