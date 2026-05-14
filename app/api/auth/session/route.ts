@@ -20,10 +20,12 @@ import { recordLogin } from '@/lib/telemetry/login-tracker';
 import { parseJmapServers, resolveTrustedJmapUrl } from '@/lib/admin/jmap-servers';
 import { MAX_ACCOUNT_SLOTS } from '@/lib/account-utils';
 
-const COOKIE_OPTIONS = {
-  ...getCookieOptions(),
-  maxAge: SESSION_COOKIE_MAX_AGE,
-};
+function sessionCookieOptions() {
+  return {
+    ...getCookieOptions(),
+    maxAge: SESSION_COOKIE_MAX_AGE,
+  };
+}
 
 function getSlot(request: NextRequest): number {
   const raw = request.nextUrl.searchParams.get('slot');
@@ -88,7 +90,7 @@ export async function POST(request: NextRequest) {
       : await verifyJmapAuth(upstreamUrl, authHeader, { trusted: false });
     const token = encryptSession(normalizedServerUrl, username, password);
     const cookieStore = await cookies();
-    cookieStore.set(cookieName, token, COOKIE_OPTIONS);
+    cookieStore.set(cookieName, token, sessionCookieOptions());
     setStalwartAuthContextInStore(cookieStore, slot, {
       serverUrl: normalizedServerUrl,
       username,
