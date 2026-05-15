@@ -263,7 +263,7 @@ export function IdentityForm({ identity, onSave, onCancel }: IdentityFormProps) 
         </label>
         <textarea
           id="identity-html-sig"
-          maxLength={5000}
+          maxLength={50000}
           value={formData.htmlSignature}
           onChange={(e) => setFormData({ ...formData, htmlSignature: e.target.value })}
           rows={5}
