@@ -728,8 +728,8 @@ const IDENTITIES = [
     email: 'dev@localhost',
     replyTo: null,
     bcc: null,
-    textSignature: '-- \nDev User\nBulwark Webmail Developer',
-    htmlSignature: '<p>--<br>Dev User<br><em>Bulwark Webmail Developer</em></p>',
+    textSignature: 'Dev User\nBulwark Webmail Developer',
+    htmlSignature: '<p>Dev User<br><em>Bulwark Webmail Developer</em></p>',
     mayDelete: false,
   },
 ];
