@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.6.6 (2026-05-15)
+
+### Features
+
+- **Mail**: Sync onboarding completion state across devices so the welcome flow only runs once per account (#285)
+- **Mail**: Distinct icons for Shared, Important, Memos, Scheduled, and Snoozed folders (#288)
+- **Compose**: Raise HTML identity signature length cap to 50,000 characters
+- **Compose**: Allow `<img>` tags in HTML identity signatures for inline logos and banners
+
+### Fixes
+
+- **Files**: Hide Files settings entry and sidebar nav when the `filesEnabled` policy is off (#291)
+- **Admin**: Honor the `cookieSameSite` admin config override instead of always defaulting (#284)
+- **UI**: Standardize punctuation in tooltips and inline comments across locales
+
+### i18n
+
+- Add Danish localization
+- Clean up Danish locale wiring and sort the language picker alphabetically (#286)
+
 ## 1.6.5 (2026-05-13)
 
 ### Features
