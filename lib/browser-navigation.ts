@@ -89,3 +89,45 @@ export function getLocaleFromPath(): string {
   );
   return locale || 'en';
 }
+
+/**
+ * Returns the current location as a "next-intl internal" path - i.e. with
+ * the mount prefix (basePath) and locale segment stripped. Suitable for
+ * persisting and later passing to next-intl's `router.push()`, which will
+ * re-add the locale and Next.js will re-add the basePath.
+ *
+ * Storing a fully-prefixed path (e.g. `/webmail/en/calendar`) and later
+ * pushing it through next-intl's router on a basePath deployment causes
+ * the prefix to be doubled (`/webmail/en/webmail/en/calendar` → 404).
+ *
+ * Examples (NEXT_PUBLIC_BASE_PATH=/webmail, locale=en):
+ *   /webmail/en               → /
+ *   /webmail/en/calendar      → /calendar
+ *   /webmail/en/mail?id=42    → /mail?id=42
+ *
+ * Examples (no basePath, locale=fr):
+ *   /fr                       → /
+ *   /fr/calendar?view=day     → /calendar?view=day
+ */
+export function getAppRelativePath(): string {
+  if (typeof window === 'undefined') return '/';
+
+  const fullPath = window.location.pathname;
+  const search = window.location.search;
+  const hash = window.location.hash;
+
+  const prefix = getPathPrefix();
+  let stripped = fullPath;
+  if (prefix && stripped.startsWith(prefix)) {
+    stripped = stripped.slice(prefix.length);
+  }
+
+  // Strip leading locale segment if present.
+  const segments = stripped.split('/').filter(Boolean);
+  if (segments.length > 0 && (locales as readonly string[]).includes(segments[0])) {
+    segments.shift();
+  }
+
+  const result = '/' + segments.join('/');
+  return `${result}${search}${hash}`;
+}

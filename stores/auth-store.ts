@@ -12,7 +12,7 @@ import { useAccountStore } from './account-store';
 import { fetchConfig } from '@/hooks/use-config';
 import { debug } from '@/lib/debug';
 import { generateAccountId, MAX_ACCOUNT_SLOTS } from '@/lib/account-utils';
-import { replaceWindowLocation, getPathPrefix, getLocaleFromPath, apiFetch } from '@/lib/browser-navigation';
+import { replaceWindowLocation, getPathPrefix, getLocaleFromPath, getAppRelativePath, apiFetch } from '@/lib/browser-navigation';
 import { notifyParent } from '@/lib/iframe-bridge';
 import { snapshotAccount, restoreAccount, clearAllStores, evictAccount, evictAll } from '@/lib/account-state-manager';
 import type { Identity } from '@/lib/jmap/types';
@@ -203,7 +203,11 @@ function saveRedirectAfterLogin(): void {
     const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
 
     if (currentPath !== loginPath) {
-      sessionStorage.setItem('redirect_after_login', currentPath);
+      // Persist as an app-relative path (no basePath, no locale) so the
+      // login page can hand it to next-intl's router unchanged. Storing the
+      // raw window.location.pathname doubles the prefix on basePath
+      // deployments because next-intl + Next.js re-prepend locale + basePath.
+      sessionStorage.setItem('redirect_after_login', getAppRelativePath());
     }
   } catch {
     /* noop */

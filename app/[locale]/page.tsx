@@ -23,6 +23,7 @@ import { useContactStore } from "@/stores/contact-store";
 import { useIdentityStore } from "@/stores/identity-store";
 import { useUIStore } from "@/stores/ui-store";
 import { useDeviceDetection } from "@/hooks/use-media-query";
+import { getAppRelativePath } from "@/lib/browser-navigation";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useRefreshGesture } from "@/hooks/use-refresh-gesture";
 import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
@@ -661,7 +662,7 @@ export default function Home() {
   // Redirect to login if not authenticated
   useEffect(() => {
     if (initialCheckDone && !isAuthenticated && !authLoading) {
-      try { sessionStorage.setItem('redirect_after_login', window.location.pathname); } catch { /* ignore */ }
+      try { sessionStorage.setItem('redirect_after_login', getAppRelativePath()); } catch { /* ignore */ }
       redirectToLogin();
     }
   }, [initialCheckDone, isAuthenticated, authLoading]);

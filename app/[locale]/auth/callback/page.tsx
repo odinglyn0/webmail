@@ -1,7 +1,8 @@
 "use client";
 
 import { Suspense, useEffect, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "@/i18n/navigation";
+import { useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useAuthStore } from "@/stores/auth-store";
 import { getPathPrefix } from "@/lib/browser-navigation";
@@ -50,6 +51,9 @@ function OAuthCallbackInner() {
         return;
       }
 
+      // The redirect URI sent to the IdP must include both the basePath
+      // (Next.js mount prefix) and locale segment because the IdP redirects
+      // the browser straight to that URL - no Next.js routing in between.
       const prefix = getPathPrefix(params.locale as string);
       const redirectUri = `${window.location.origin}${prefix}/${params.locale}/auth/callback`;
 
@@ -61,7 +65,9 @@ function OAuthCallbackInner() {
             sessionStorage.removeItem("oauth_server_url");
             sessionStorage.removeItem("oauth_server_id");
             sessionStorage.removeItem("oauth_add_account_mode");
-            let redirectTo = `${prefix}/${params.locale}`;
+            // App-relative path for next-intl's router. It will prepend the
+            // locale and Next.js will prepend basePath.
+            let redirectTo = '/';
             try {
               const saved = sessionStorage.getItem('redirect_after_login');
               if (saved) {
@@ -79,11 +85,10 @@ function OAuthCallbackInner() {
         });
     } else if (state) {
       // Server-side SSO flow - state was stored in encrypted httpOnly cookie
-      const ssoPrefix = getPathPrefix(params.locale as string);
       loginWithServerSso(code, state)
         .then((success) => {
           if (success) {
-            let redirectTo = `${ssoPrefix}/${params.locale}`;
+            let redirectTo = '/';
             try {
               const saved = sessionStorage.getItem('redirect_after_login');
               if (saved) {
@@ -119,7 +124,7 @@ function OAuthCallbackInner() {
           </p>
           <Button
             variant="outline"
-            onClick={() => router.push(`${getPathPrefix(params.locale as string)}/${params.locale}/login`)}
+            onClick={() => router.push('/login')}
           >
             {t("oauth_error.back_to_login")}
           </Button>

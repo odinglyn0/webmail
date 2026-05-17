@@ -20,6 +20,7 @@ import { toast } from "@/stores/toast-store";
 import { useIsMobile } from "@/hooks/use-media-query";
 import { Button } from "@/components/ui/button";
 import { CalendarToolbar } from "@/components/calendar/calendar-toolbar";
+import { getAppRelativePath } from "@/lib/browser-navigation";
 import { CalendarMonthView } from "@/components/calendar/calendar-month-view";
 import { CalendarWeekView } from "@/components/calendar/calendar-week-view";
 import { CalendarDayView } from "@/components/calendar/calendar-day-view";
@@ -164,7 +165,7 @@ export default function CalendarPage() {
 
   useEffect(() => {
     if (initialCheckDone && !isAuthenticated && !authLoading) {
-      try { sessionStorage.setItem('redirect_after_login', window.location.pathname); } catch { /* ignore */ }
+      try { sessionStorage.setItem('redirect_after_login', getAppRelativePath()); } catch { /* ignore */ }
       redirectToLogin();
     } else if (client && !supportsCalendar && !pendingWebcalAccountChoice && !isProtocolAccountSwitching && !pendingSubscription && !showWebcalActionChoice && !hasPendingWebcal()) {
       router.push("/");

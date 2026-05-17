@@ -12,6 +12,7 @@ import { useEmailStore } from "@/stores/email-store";
 import { useFileStore } from "@/stores/file-store";
 import { toast } from "@/stores/toast-store";
 import { cn, formatFileSize } from "@/lib/utils";
+import { getAppRelativePath } from "@/lib/browser-navigation";
 import { NavigationRail } from "@/components/layout/navigation-rail";
 import { SidebarAppsModal } from "@/components/layout/sidebar-apps-modal";
 import { InlineAppView } from "@/components/layout/inline-app-view";
@@ -123,7 +124,7 @@ export default function FilesPage() {
   // Redirect if not authenticated
   useEffect(() => {
     if (initialCheckDone && !isAuthenticated && !authLoading) {
-      try { sessionStorage.setItem('redirect_after_login', window.location.pathname); } catch { /* ignore */ }
+      try { sessionStorage.setItem('redirect_after_login', getAppRelativePath()); } catch { /* ignore */ }
       redirectToLogin();
     }
   }, [initialCheckDone, isAuthenticated, authLoading]);
