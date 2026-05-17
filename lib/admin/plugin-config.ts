@@ -1,21 +1,14 @@
-import { readFile, writeFile, mkdir, rename, unlink } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import path from 'node:path';
 import { logger } from '@/lib/logger';
-import { getConfigDir, assertWritable } from './paths';
+import { getStorage } from '@/lib/storage';
+import { assertWritable } from './paths';
 
-function getPluginConfigDir(): string {
-  return path.join(getConfigDir(), 'plugin-config');
-}
-
-function configPath(pluginId: string): string {
-  return path.join(getPluginConfigDir(), `${pluginId}.json`);
-}
-
-async function ensureDir(dir: string): Promise<void> {
-  if (!existsSync(dir)) {
-    await mkdir(dir, { recursive: true });
+function configKey(pluginId: string): string {
+  // Reject anything other than the documented plugin-id alphabet so we
+  // can't be coerced into writing outside the namespace.
+  if (!/^[a-z0-9._-]+$/i.test(pluginId)) {
+    throw new Error(`Invalid plugin id: ${pluginId}`);
   }
+  return `admin/plugin-config/${pluginId}.json`;
 }
 
 /**
@@ -23,10 +16,10 @@ async function ensureDir(dir: string): Promise<void> {
  */
 export async function getPluginConfig(pluginId: string): Promise<Record<string, unknown>> {
   try {
-    const raw = await readFile(configPath(pluginId), 'utf-8');
-    return JSON.parse(raw);
+    const buf = await getStorage().get(configKey(pluginId));
+    if (!buf) return {};
+    return JSON.parse(buf.toString('utf-8'));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
     logger.warn(`Failed to read plugin config for ${pluginId}`, {
       error: error instanceof Error ? error.message : 'Unknown error',
     });
@@ -39,16 +32,9 @@ export async function getPluginConfig(pluginId: string): Promise<Record<string, 
  */
 export async function setPluginConfig(pluginId: string, key: string, value: unknown): Promise<void> {
   assertWritable('update plugin config');
-  const dir = getPluginConfigDir();
-  await ensureDir(dir);
-
   const config = await getPluginConfig(pluginId);
   config[key] = value;
-
-  const filePath = configPath(pluginId);
-  const tmpPath = filePath + '.tmp';
-  await writeFile(tmpPath, JSON.stringify(config, null, 2), 'utf-8');
-  await rename(tmpPath, filePath);
+  await getStorage().put(configKey(pluginId), JSON.stringify(config, null, 2));
 }
 
 /**
@@ -60,16 +46,11 @@ export async function deletePluginConfigKey(pluginId: string, key: string): Prom
   delete config[key];
 
   if (Object.keys(config).length === 0) {
-    try { await unlink(configPath(pluginId)); } catch { /* ok if missing */ }
+    await getStorage().del(configKey(pluginId));
     return;
   }
 
-  const dir = getPluginConfigDir();
-  await ensureDir(dir);
-  const filePath = configPath(pluginId);
-  const tmpPath = filePath + '.tmp';
-  await writeFile(tmpPath, JSON.stringify(config, null, 2), 'utf-8');
-  await rename(tmpPath, filePath);
+  await getStorage().put(configKey(pluginId), JSON.stringify(config, null, 2));
 }
 
 /**
@@ -77,5 +58,5 @@ export async function deletePluginConfigKey(pluginId: string, key: string): Prom
  */
 export async function deleteAllPluginConfig(pluginId: string): Promise<void> {
   assertWritable('delete plugin config');
-  try { await unlink(configPath(pluginId)); } catch { /* ok if missing */ }
+  await getStorage().del(configKey(pluginId));
 }

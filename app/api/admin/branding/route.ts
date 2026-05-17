@@ -1,16 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
+import path from 'node:path';
 import { requireAdminAuth, getClientIP } from '@/lib/admin/session';
 import { auditLog } from '@/lib/admin/audit';
 import { configManager } from '@/lib/admin/config-manager';
-import { getConfigDir } from '@/lib/admin/paths';
+import { getConfigPath } from '@/lib/admin/paths';
+import { getStorage } from '@/lib/storage';
 import { logger } from '@/lib/logger';
-import { writeFile, unlink, mkdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import path from 'node:path';
 
-function getBrandingDir(): string {
-  return path.join(getConfigDir(), 'branding');
+function brandingKey(filename: string): string {
+  return getConfigPath(`branding/${filename}`);
 }
+
 const MAX_FILE_SIZE = 2 * 1024 * 1024; // 2 MB
 const ALLOWED_MIME_TYPES = new Set([
   'image/svg+xml',
@@ -36,7 +36,7 @@ function sanitizeFilename(name: string): string {
 }
 
 /**
- * POST /api/admin/branding - Upload a branding image file
+ * POST /api/admin/branding - Upload a branding image file.
  *
  * Expects multipart/form-data with:
  *   - file: the image file
@@ -82,16 +82,9 @@ export async function POST(request: NextRequest) {
     };
     const ext = extMap[file.type] || '.png';
     const safeName = sanitizeFilename(`${slot}${ext}`);
-    const filePath = path.join(getBrandingDir(), safeName);
 
-    // Ensure branding directory exists
-    if (!existsSync(getBrandingDir())) {
-      await mkdir(getBrandingDir(), { recursive: true });
-    }
-
-    // Write file to disk
     const buffer = Buffer.from(await file.arrayBuffer());
-    await writeFile(filePath, buffer);
+    await getStorage().put(brandingKey(safeName), buffer);
 
     // Update config to point to the served URL
     const servedUrl = `/api/admin/branding/${safeName}`;
@@ -127,10 +120,11 @@ export async function DELETE(request: NextRequest) {
     // Find and remove matching files for this slot
     const possibleExts = ['.svg', '.png', '.jpg', '.webp', '.ico'];
     let removed = false;
+    const storage = getStorage();
     for (const ext of possibleExts) {
-      const filePath = path.join(getBrandingDir(), `${slot}${ext}`);
-      if (existsSync(filePath)) {
-        await unlink(filePath);
+      const key = brandingKey(`${slot}${ext}`);
+      if (await storage.has(key)) {
+        await storage.del(key);
         removed = true;
       }
     }

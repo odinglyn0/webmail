@@ -1,24 +1,31 @@
-import { appendFile, stat, rename, readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import { logger } from '@/lib/logger';
-import { ensureStateDir, getStatePath } from './paths';
+import { getStorage } from '@/lib/storage';
+import { getStatePath } from './paths';
 import type { AuditEntry } from './types';
 
 const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10 MB
 const MAX_ROTATIONS = 3;
 const AUDIT_LOG_FILE = 'audit.log';
 
-function getAuditLogPath(): string {
-  return getStatePath(AUDIT_LOG_FILE);
+function auditLogKey(rotation = 0): string {
+  return rotation === 0
+    ? getStatePath(AUDIT_LOG_FILE)
+    : getStatePath(`${AUDIT_LOG_FILE}.${rotation}`);
 }
 
 /**
- * Append an audit entry to the admin audit log. Stored under the state dir
- * so it remains writable when the config dir is mounted read-only.
+ * Append an audit entry to the admin audit log. Stored under the state
+ * namespace so it remains writable when the config namespace is mounted
+ * read-only.
+ *
+ * Atomicity: the storage backend serializes appends to the same key
+ * within a single process. Concurrent appends from different instances
+ * (e.g. multiple Vercel function instances under load) can still race;
+ * this matches the upstream behavior on multi-container Docker
+ * deployments without an external lock and is acceptable for an admin
+ * audit log where events are infrequent.
  */
 export async function auditLog(action: string, detail: Record<string, unknown>, ip: string): Promise<void> {
-  await ensureStateDir();
-
   const entry: AuditEntry = {
     ts: new Date().toISOString(),
     action,
@@ -26,30 +33,38 @@ export async function auditLog(action: string, detail: Record<string, unknown>, 
     ip,
   };
 
-  const logPath = getAuditLogPath();
+  const key = auditLogKey();
   try {
-    await appendFile(logPath, JSON.stringify(entry) + '\n', 'utf-8');
-    await rotateIfNeeded(logPath);
+    await getStorage().appendLine(key, JSON.stringify(entry));
+    await rotateIfNeeded(key);
   } catch (error) {
     logger.error('Failed to write audit log', { error: error instanceof Error ? error.message : 'Unknown error' });
   }
 }
 
-async function rotateIfNeeded(logPath: string): Promise<void> {
+async function rotateIfNeeded(key: string): Promise<void> {
   try {
-    const stats = await stat(logPath);
-    if (stats.size < MAX_LOG_SIZE) return;
+    const storage = getStorage();
+    const size = await storage.size(key);
+    if (size < 0 || size < MAX_LOG_SIZE) return;
 
-    // Rotate: audit.log.3 → deleted, audit.log.2 → .3, audit.log.1 → .2, audit.log → .1
+    // Rotate from oldest to newest:
+    //   audit.log.<MAX> is dropped, audit.log.<n> -> audit.log.<n+1>,
+    //   audit.log -> audit.log.1
     for (let i = MAX_ROTATIONS; i >= 1; i--) {
-      const from = i === 1 ? logPath : `${logPath}.${i - 1}`;
-      const to = `${logPath}.${i}`;
-      if (existsSync(from)) {
-        try { await rename(from, to); } catch { /* target may exist on overwrite */ }
+      const from = i === 1 ? key : auditLogKey(i - 1);
+      const to = auditLogKey(i);
+      try {
+        const buf = await storage.get(from);
+        if (!buf) continue;
+        await storage.put(to, buf);
+        await storage.del(from);
+      } catch {
+        /* best effort */
       }
     }
   } catch {
-    // stat failed, probably file doesn't exist yet
+    /* best effort */
   }
 }
 
@@ -57,9 +72,11 @@ async function rotateIfNeeded(logPath: string): Promise<void> {
  * Read audit log entries, newest first. Supports pagination.
  */
 export async function readAuditLog(page: number = 1, limit: number = 50, actionFilter?: string): Promise<{ entries: AuditEntry[]; total: number }> {
-  const logPath = getAuditLogPath();
+  const key = auditLogKey();
   try {
-    const content = await readFile(logPath, 'utf-8');
+    const buf = await getStorage().get(key);
+    if (!buf) return { entries: [], total: 0 };
+    const content = buf.toString('utf-8');
     const lines = content.trim().split('\n').filter(Boolean);
 
     let entries: AuditEntry[] = lines.map(line => {
@@ -75,9 +92,6 @@ export async function readAuditLog(page: number = 1, limit: number = 50, actionF
     const start = (page - 1) * limit;
     return { entries: entries.slice(start, start + limit), total };
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { entries: [], total: 0 };
-    }
     logger.warn('Failed to read audit log', { error: error instanceof Error ? error.message : 'Unknown error' });
     return { entries: [], total: 0 };
   }

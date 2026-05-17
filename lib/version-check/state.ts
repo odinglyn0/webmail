@@ -1,16 +1,22 @@
-import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import path from 'node:path';
 import { logger } from '@/lib/logger';
+import { getStorage } from '@/lib/storage';
 import type { VersionCheckStateFile } from './types';
 import { DEFAULT_VERSION_ENDPOINT } from './types';
 
-function getDir(): string {
-  return process.env.VERSION_CHECK_DATA_DIR ||
-    path.join(process.cwd(), 'data', 'version-check');
-}
-
-function statePath(): string { return path.join(getDir(), 'state.json'); }
+/**
+ * Logical key for the version-check state JSON.
+ *
+ * Layout intentionally mirrors the legacy on-disk path
+ * (data/version-check/state.json) so the fs backend stays drop-in
+ * compatible with existing volumes. The blob backend stores the same
+ * key under its configured prefix.
+ *
+ * The legacy VERSION_CHECK_DATA_DIR env var is no longer honored when
+ * using the abstraction; configure the backend with STORAGE_BACKEND
+ * instead. Operators on Docker who want to relocate this file can
+ * point STORAGE_BACKEND=fs and override the storage root.
+ */
+const STATE_KEY = 'version-check/state.json';
 
 const DEFAULTS: VersionCheckStateFile = {
   endpoint: DEFAULT_VERSION_ENDPOINT,
@@ -20,31 +26,30 @@ const DEFAULTS: VersionCheckStateFile = {
   status: null,
 };
 
+/**
+ * @deprecated Storage backend handles directory creation. Kept for
+ * source compatibility with callers that haven't been migrated yet.
+ */
 export async function ensureDir(): Promise<void> {
-  if (!existsSync(getDir())) await mkdir(getDir(), { recursive: true });
+  // No-op: storage backend creates parent dirs / namespaces on demand.
 }
 
 export async function loadState(): Promise<VersionCheckStateFile> {
-  await ensureDir();
   try {
-    const raw = await readFile(statePath(), 'utf8');
-    const parsed = JSON.parse(raw) as Partial<VersionCheckStateFile>;
+    const buf = await getStorage().get(STATE_KEY);
+    if (!buf) return { ...DEFAULTS };
+    const parsed = JSON.parse(buf.toString('utf-8')) as Partial<VersionCheckStateFile>;
     return { ...DEFAULTS, ...parsed };
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-      logger.warn('version-check: state read failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+    logger.warn('version-check: state read failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
     return { ...DEFAULTS };
   }
 }
 
 export async function saveState(state: VersionCheckStateFile): Promise<void> {
-  await ensureDir();
-  const tmp = statePath() + '.tmp';
-  await writeFile(tmp, JSON.stringify(state, null, 2), 'utf8');
-  await rename(tmp, statePath());
+  await getStorage().put(STATE_KEY, JSON.stringify(state, null, 2));
 }
 
 export function disabledByEnv(): boolean {

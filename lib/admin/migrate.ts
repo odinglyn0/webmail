@@ -1,9 +1,6 @@
-import { readFile, writeFile, rename, stat, unlink } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import { logger } from '@/lib/logger';
+import { getStorage } from '@/lib/storage';
 import {
-  ensureConfigDir,
-  ensureStateDir,
   getConfigPath,
   getStatePath,
   isConfigReadOnly,
@@ -20,26 +17,31 @@ interface LegacyAdminData {
 }
 
 /**
- * One-shot migration from the v1 layout (everything mixed in `data/admin/`)
- * to the v2 layout (config + state split, see lib/admin/paths.ts).
- *
- * Idempotent: writes a `.migrated-v2` marker into the config dir on success.
+ * One-shot migration from the v1 layout (everything mixed under
+ * `data/admin/`) to the v2 layout (config + state split, see
+ * lib/admin/paths.ts). Idempotent via a `.migrated-v2` marker.
  *
  * Migrations performed:
  *   1. admin.json with timestamps → admin.json (passwordHash only) +
- *      admin-state.json (createdAt, lastLogin, passwordChangedAt)
- *   2. audit.log moved from config dir to state dir (by rename if same FS,
- *      else copy + delete).
+ *      admin-state.json (createdAt, lastLogin, passwordChangedAt).
+ *   2. audit.log copied from config namespace to state namespace.
  *
- * Skipped silently when the config dir is read-only - operators who already
- * locked their config volume must do the migration manually before mounting
- * :ro.
+ * Skipped silently when the config namespace is read-only.
+ *
+ * Note: this migration only runs on the fs backend. On the blob backend
+ * fresh installs start in v2 layout directly, so there's nothing to
+ * migrate. We keep the function here so existing fs deployments upgrading
+ * past this release still pick up the migration.
  */
 export async function migrateLegacyAdminLayout(): Promise<void> {
   if (isConfigReadOnly()) return;
+  // Skip on blob: fresh blob installs are always v2; there's no v1 layout
+  // to migrate from on a serverless deployment.
+  if ((process.env.STORAGE_BACKEND || '').toLowerCase() === 'blob') return;
 
-  const markerPath = getConfigPath(MIGRATION_MARKER);
-  if (existsSync(markerPath)) return;
+  const storage = getStorage();
+  const markerKey = getConfigPath(MIGRATION_MARKER);
+  if (await storage.has(markerKey)) return;
 
   let didWork = false;
 
@@ -47,8 +49,7 @@ export async function migrateLegacyAdminLayout(): Promise<void> {
     didWork = (await migrateAdminJson()) || didWork;
     didWork = (await migrateAuditLog()) || didWork;
 
-    await ensureConfigDir();
-    await writeFile(markerPath, new Date().toISOString(), 'utf-8');
+    await storage.put(markerKey, new Date().toISOString());
     if (didWork) {
       logger.info('Admin layout migrated to v2 (config/state split)');
     }
@@ -59,25 +60,15 @@ export async function migrateLegacyAdminLayout(): Promise<void> {
   }
 }
 
-/**
- * If the existing admin.json carries timestamp fields (legacy mixed layout),
- * split them into admin-state.json and rewrite admin.json without them.
- * Returns true if a migration was performed.
- */
 async function migrateAdminJson(): Promise<boolean> {
-  const adminJsonPath = getConfigPath('admin.json');
-  if (!existsSync(adminJsonPath)) return false;
-
-  let raw: string;
-  try {
-    raw = await readFile(adminJsonPath, 'utf-8');
-  } catch {
-    return false;
-  }
+  const storage = getStorage();
+  const adminKey = getConfigPath('admin.json');
+  const buf = await storage.get(adminKey);
+  if (!buf) return false;
 
   let data: LegacyAdminData;
   try {
-    data = JSON.parse(raw) as LegacyAdminData;
+    data = JSON.parse(buf.toString('utf-8')) as LegacyAdminData;
   } catch {
     logger.warn('admin.json is not valid JSON; skipping migration');
     return false;
@@ -100,32 +91,20 @@ async function migrateAdminJson(): Promise<boolean> {
   };
   const configData: AdminConfigData = { passwordHash: data.passwordHash };
 
-  await ensureStateDir();
-  const statePath = getStatePath('admin-state.json');
-
-  // If admin-state.json already exists, prefer its values: a previous
-  // migration may have succeeded and recorded fresh login timestamps that
-  // we'd otherwise stomp. The legacy admin.json data is older by definition.
-  if (!existsSync(statePath)) {
-    const stateTmp = statePath + '.tmp';
-    await writeFile(stateTmp, JSON.stringify(stateData, null, 2), 'utf-8');
-    await rename(stateTmp, statePath);
+  // Don't stomp existing v2 admin-state.json (a previous migration may
+  // already have run and recorded fresh timestamps).
+  const stateKey = getStatePath('admin-state.json');
+  if (!(await storage.has(stateKey))) {
+    await storage.put(stateKey, JSON.stringify(stateData, null, 2));
   }
-
-  const configTmp = adminJsonPath + '.tmp';
-  await writeFile(configTmp, JSON.stringify(configData, null, 2), 'utf-8');
-  await rename(configTmp, adminJsonPath);
+  await storage.put(adminKey, JSON.stringify(configData, null, 2));
 
   logger.info('Migrated admin.json: split timestamps into admin-state.json');
   return true;
 }
 
-/**
- * Move audit.log from the config dir to the state dir if present. Returns
- * true if a migration was performed. Also moves rotated copies (audit.log.1
- * through .3).
- */
 async function migrateAuditLog(): Promise<boolean> {
+  const storage = getStorage();
   const sources = [
     'audit.log',
     'audit.log.1',
@@ -136,45 +115,34 @@ async function migrateAuditLog(): Promise<boolean> {
   let moved = false;
   for (const name of sources) {
     const src = getConfigPath(name);
-    if (!existsSync(src)) continue;
+    if (!(await storage.has(src))) continue;
 
-    await ensureStateDir();
     const dst = getStatePath(name);
-
-    try {
-      // Same-FS rename is atomic. Falls through to copy if cross-device.
-      await rename(src, dst);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === 'EXDEV') {
-        // Cross-device: copy bytes, then delete source.
-        const data = await readFile(src);
-        await writeFile(dst, data);
-        await unlink(src);
-      } else {
-        throw error;
-      }
-    }
+    const data = await storage.get(src);
+    if (!data) continue;
+    await storage.put(dst, data);
+    await storage.del(src);
     moved = true;
   }
 
   if (moved) {
-    logger.info('Migrated audit.log to state dir');
+    logger.info('Migrated audit.log to state namespace');
   }
   return moved;
 }
 
 /**
- * Returns approximate size of legacy data still mixed in the config dir
- * (for diagnostics / admin UI). Always returns 0 once migration has run.
+ * Returns whether legacy data is still mixed in the config namespace
+ * (for diagnostics / admin UI).
  */
 export async function getLegacyDataInfo(): Promise<{ adminJsonHasTimestamps: boolean; auditLogInConfigDir: boolean }> {
+  const storage = getStorage();
+
   let adminJsonHasTimestamps = false;
-  const adminJsonPath = getConfigPath('admin.json');
-  if (existsSync(adminJsonPath)) {
+  const adminJsonBuf = await storage.get(getConfigPath('admin.json')).catch(() => null);
+  if (adminJsonBuf) {
     try {
-      const raw = await readFile(adminJsonPath, 'utf-8');
-      const parsed = JSON.parse(raw);
+      const parsed = JSON.parse(adminJsonBuf.toString('utf-8'));
       adminJsonHasTimestamps =
         'createdAt' in parsed ||
         'lastLogin' in parsed ||
@@ -184,13 +152,7 @@ export async function getLegacyDataInfo(): Promise<{ adminJsonHasTimestamps: boo
     }
   }
 
-  let auditLogInConfigDir = false;
-  try {
-    await stat(getConfigPath('audit.log'));
-    auditLogInConfigDir = true;
-  } catch {
-    /* not present - good */
-  }
+  const auditLogInConfigDir = await storage.has(getConfigPath('audit.log'));
 
   return { adminJsonHasTimestamps, auditLogInConfigDir };
 }

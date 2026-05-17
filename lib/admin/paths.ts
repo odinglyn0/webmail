@@ -1,76 +1,45 @@
-import { existsSync } from 'node:fs';
-import { mkdir, writeFile, unlink } from 'node:fs/promises';
-import path from 'node:path';
 import { logger } from '@/lib/logger';
+import { getStorage } from '@/lib/storage';
 
 /**
- * Admin data directories.
+ * Logical paths for admin data. With the storage abstraction these are
+ * keys, not filesystem paths. The fs backend maps them to files under
+ * <storage-root>/admin and <storage-root>/admin-state; the blob backend
+ * stores them under the same logical names within its prefix.
  *
- * Two dirs intentionally split (issue #226):
- *   - CONFIG: holds operator-authored state (config.json, policy.json,
- *     admin.json passwordHash, plugins, themes, branding uploads). Can be
- *     mounted read-only after initial setup.
- *   - STATE: holds runtime mutations (admin-state.json with login timestamps,
- *     audit.log, .setup-token). Always read-write.
+ * Two namespaces intentionally split (issue #226):
+ *   - CONFIG (admin/...): operator-authored state - config.json, policy.json,
+ *     admin.json (passwordHash), plugins/, themes/, plugin-config/, branding
+ *     uploads. Can be made read-only via ADMIN_CONFIG_READONLY.
+ *   - STATE (admin-state/...): runtime mutations - admin-state.json,
+ *     audit.log, .setup-token. Always read-write.
  *
- * Resolution order:
- *   getConfigDir()
- *     1. ADMIN_CONFIG_DIR
- *     2. ADMIN_DATA_DIR (legacy)
- *     3. <cwd>/data/admin
+ * Migration note: the legacy ADMIN_CONFIG_DIR / ADMIN_DATA_DIR /
+ * ADMIN_STATE_DIR env vars are no longer honored by the abstraction. On
+ * Docker, mount your persistent volume at <cwd>/data and existing
+ * subdirectory layouts (data/admin, data/admin-state) keep working
+ * without code changes since the fs backend's root is <cwd>/data.
  *
- *   getStateDir()
- *     1. ADMIN_STATE_DIR
- *     2. <ADMIN_CONFIG_DIR>/state - if config dir was set explicitly
- *     3. <ADMIN_DATA_DIR>/state - back-compat: stays on the legacy volume
- *     4. <cwd>/data/admin-state - fresh-install default; matches the
- *        sibling mount in docker-compose.yml
- *
- * The legacy ADMIN_DATA_DIR keeps existing single-volume mounts working
- * unchanged: everything ends up under it, with state in a `state/` subdir.
- * Fresh installs and the docker-compose default keep state in a separate
- * sibling dir so the config dir can be mounted :ro after setup.
+ * If you need to relocate state on Docker, set STORAGE_FS_ROOT (handled
+ * inside the storage module).
  */
 
-export function getConfigDir(): string {
-  return (
-    process.env.ADMIN_CONFIG_DIR ||
-    process.env.ADMIN_DATA_DIR ||
-    path.join(process.cwd(), 'data', 'admin')
-  );
-}
-
-export function getStateDir(): string {
-  if (process.env.ADMIN_STATE_DIR) return process.env.ADMIN_STATE_DIR;
-  if (process.env.ADMIN_CONFIG_DIR) {
-    return path.join(process.env.ADMIN_CONFIG_DIR, 'state');
-  }
-  if (process.env.ADMIN_DATA_DIR) {
-    return path.join(process.env.ADMIN_DATA_DIR, 'state');
-  }
-  return path.join(process.cwd(), 'data', 'admin-state');
-}
-
 export function getConfigPath(filename: string): string {
-  return path.join(getConfigDir(), filename);
+  return `admin/${filename}`;
 }
 
 export function getStatePath(filename: string): string {
-  return path.join(getStateDir(), filename);
+  return `admin-state/${filename}`;
 }
 
+/** @deprecated The storage backend handles namespace creation. */
 export async function ensureConfigDir(): Promise<void> {
-  const dir = getConfigDir();
-  if (!existsSync(dir)) {
-    await mkdir(dir, { recursive: true });
-  }
+  // No-op
 }
 
+/** @deprecated The storage backend handles namespace creation. */
 export async function ensureStateDir(): Promise<void> {
-  const dir = getStateDir();
-  if (!existsSync(dir)) {
-    await mkdir(dir, { recursive: true });
-  }
+  // No-op
 }
 
 // ─── Read-only mode ─────────────────────────────────────────────────────────
@@ -78,11 +47,14 @@ export async function ensureStateDir(): Promise<void> {
 let cachedReadOnly: boolean | null = null;
 
 /**
- * Whether the config dir is locked. Operators set ADMIN_CONFIG_READONLY=true
- * after running the setup wizard and remounting the volume :ro.
+ * Whether the config namespace is locked. Operators set
+ * ADMIN_CONFIG_READONLY=true after running the setup wizard and want
+ * the app to refuse mutations to admin config (cleaner error than
+ * letting a write fail mid-request).
  *
- * When true, all writes to the config dir are refused at the application
- * layer (cleaner error than a mid-request EROFS).
+ * On Blob, this flag is purely advisory - Blob is always writable as
+ * long as BLOB_READ_WRITE_TOKEN is valid. Operators on Vercel can leave
+ * it unset.
  */
 export function isConfigReadOnly(): boolean {
   if (cachedReadOnly !== null) return cachedReadOnly;
@@ -92,21 +64,22 @@ export function isConfigReadOnly(): boolean {
 }
 
 /**
- * Probe the config dir by writing a temp file. Used to auto-detect RO mounts
- * when ADMIN_CONFIG_READONLY is not set explicitly. Run once at startup;
- * cheap on local FS, can be slow on networked FS, hence opt-in.
+ * Probe the storage backend by writing and deleting a temporary key.
+ * Used to auto-detect read-only mounts when ADMIN_CONFIG_READONLY isn't
+ * set explicitly.
  */
 export async function probeConfigReadOnly(): Promise<boolean> {
   if (process.env.ADMIN_CONFIG_READONLY) return isConfigReadOnly();
   try {
-    const probe = path.join(getConfigDir(), '.rw-probe');
-    await writeFile(probe, '');
-    await unlink(probe);
+    const probeKey = 'admin/.rw-probe';
+    const storage = getStorage();
+    await storage.put(probeKey, '');
+    await storage.del(probeKey);
     cachedReadOnly = false;
     return false;
   } catch {
     cachedReadOnly = true;
-    logger.info('Config dir is read-only (auto-detected)');
+    logger.info('Config storage is read-only (auto-detected)');
     return true;
   }
 }
@@ -115,7 +88,7 @@ export class ConfigReadOnlyError extends Error {
   constructor(operation: string) {
     super(
       `Cannot ${operation}: configuration is read-only. ` +
-        `Remount the config volume read-write or unset ADMIN_CONFIG_READONLY.`
+        `Unset ADMIN_CONFIG_READONLY or grant write access to the storage backend.`
     );
     this.name = 'ConfigReadOnlyError';
   }

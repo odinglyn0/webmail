@@ -1,13 +1,11 @@
-import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import path from 'node:path';
 import { createHmac } from 'node:crypto';
 import { logger } from '@/lib/logger';
+import { getStorage } from '@/lib/storage';
 import { getInstanceId } from './state';
 
 // We never store usernames or server URLs in the clear. Each login is
 // recorded as HMAC-SHA256(username + '@' + serverUrl, instance_id), so the
-// file on disk cannot be cross-correlated with any other instance and is
+// stored data cannot be cross-correlated with any other instance and is
 // not PII even if leaked.
 
 interface LoginRecord {
@@ -22,27 +20,20 @@ interface LoginsFile {
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 const RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 
+const LOGINS_KEY = 'telemetry/logins.json';
+
 let cache: LoginsFile | null = null;
-
-function getDir(): string {
-  return process.env.TELEMETRY_DATA_DIR || path.join(process.cwd(), 'data', 'telemetry');
-}
-
-function loginsPath(): string {
-  return path.join(getDir(), 'logins.json');
-}
-
-async function ensureDir(): Promise<void> {
-  const dir = getDir();
-  if (!existsSync(dir)) await mkdir(dir, { recursive: true });
-}
 
 async function loadFile(): Promise<LoginsFile> {
   if (cache) return cache;
   try {
-    const raw = await readFile(loginsPath(), 'utf8');
-    const parsed = JSON.parse(raw) as Partial<LoginsFile>;
-    cache = Array.isArray(parsed?.records) ? { records: parsed.records as LoginRecord[] } : { records: [] };
+    const buf = await getStorage().get(LOGINS_KEY);
+    if (buf) {
+      const parsed = JSON.parse(buf.toString('utf-8')) as Partial<LoginsFile>;
+      cache = Array.isArray(parsed?.records) ? { records: parsed.records as LoginRecord[] } : { records: [] };
+    } else {
+      cache = { records: [] };
+    }
   } catch {
     cache = { records: [] };
   }
@@ -50,11 +41,8 @@ async function loadFile(): Promise<LoginsFile> {
 }
 
 async function saveFile(file: LoginsFile): Promise<void> {
-  await ensureDir();
   cache = file;
-  const tmp = loginsPath() + '.tmp';
-  await writeFile(tmp, JSON.stringify(file), 'utf8');
-  await rename(tmp, loginsPath());
+  await getStorage().put(LOGINS_KEY, JSON.stringify(file));
 }
 
 function normalizeServer(serverUrl: string): string {

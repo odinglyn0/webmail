@@ -1,9 +1,7 @@
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { readFile, writeFile, unlink, mkdir, rename } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import path from 'node:path';
 import { logger } from '@/lib/logger';
 import { getSessionSecret } from '@/lib/auth/session-secret';
+import { getStorage } from '@/lib/storage';
 
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 12;
@@ -15,28 +13,22 @@ function getKey(): Buffer {
   return createHash('sha256').update(secret).digest();
 }
 
-function getSettingsDir(): string {
-  return process.env.SETTINGS_DATA_DIR || path.join(process.cwd(), 'data', 'settings');
-}
-
-function getSettingsPath(username: string, serverUrl: string): string {
+/**
+ * Compute the storage key for a user's settings blob. The username and
+ * server URL are hashed together so the on-disk / blob name doesn't
+ * leak the user identity, and the result is namespaced under
+ * settings/ so it groups cleanly with other app state.
+ */
+function settingsKey(username: string, serverUrl: string): string {
   const hash = createHash('sha256').update(`${username}:${serverUrl}`).digest('hex');
-  const filePath = path.join(getSettingsDir(), `${hash}.enc`);
-  // Defense in depth: ensure path stays within the settings directory
-  const resolvedDir = path.resolve(getSettingsDir());
-  const resolvedPath = path.resolve(filePath);
-  if (!resolvedPath.startsWith(resolvedDir + path.sep) && resolvedPath !== resolvedDir) {
-    throw new Error('Invalid settings path');
+  if (!/^[0-9a-f]{64}$/.test(hash)) {
+    // Defensive: should be impossible since createHash returns hex.
+    throw new Error('Invalid settings key');
   }
-  return resolvedPath;
+  return `settings/${hash}.enc`;
 }
 
 export async function saveUserSettings(username: string, serverUrl: string, settings: Record<string, unknown>): Promise<void> {
-  const dir = getSettingsDir();
-  if (!existsSync(dir)) {
-    await mkdir(dir, { recursive: true });
-  }
-
   const key = getKey();
   const iv = randomBytes(IV_LENGTH);
   const cipher = createCipheriv(ALGORITHM, key, iv);
@@ -46,17 +38,13 @@ export async function saveUserSettings(username: string, serverUrl: string, sett
   const tag = cipher.getAuthTag();
 
   const data = Buffer.concat([iv, tag, encrypted]);
-  const targetPath = getSettingsPath(username, serverUrl);
-  const tmpPath = targetPath + '.tmp';
-  await writeFile(tmpPath, data);
-  await rename(tmpPath, targetPath);
+  await getStorage().put(settingsKey(username, serverUrl), data);
 }
 
 export async function loadUserSettings(username: string, serverUrl: string): Promise<Record<string, unknown> | null> {
-  const filePath = getSettingsPath(username, serverUrl);
-
   try {
-    const data = await readFile(filePath);
+    const data = await getStorage().get(settingsKey(username, serverUrl));
+    if (!data) return null;
     if (data.length < IV_LENGTH + TAG_LENGTH) return null;
 
     const key = getKey();
@@ -70,7 +58,6 @@ export async function loadUserSettings(username: string, serverUrl: string): Pro
     const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
     return JSON.parse(decrypted.toString('utf8'));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     logger.warn('Failed to load user settings', { error: error instanceof Error ? error.message : 'Unknown error' });
     return null;
   }
@@ -78,10 +65,8 @@ export async function loadUserSettings(username: string, serverUrl: string): Pro
 
 export async function deleteUserSettings(username: string, serverUrl: string): Promise<void> {
   try {
-    await unlink(getSettingsPath(username, serverUrl));
+    await getStorage().del(settingsKey(username, serverUrl));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      logger.warn('Failed to delete user settings', { error: error instanceof Error ? error.message : 'Unknown error' });
-    }
+    logger.warn('Failed to delete user settings', { error: error instanceof Error ? error.message : 'Unknown error' });
   }
 }

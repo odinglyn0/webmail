@@ -1,13 +1,7 @@
 import { scrypt, randomBytes, timingSafeEqual } from 'node:crypto';
-import { readFile, writeFile, rename } from 'node:fs/promises';
 import { logger } from '@/lib/logger';
-import {
-  ensureConfigDir,
-  ensureStateDir,
-  getConfigPath,
-  getStatePath,
-  assertWritable,
-} from './paths';
+import { getStorage } from '@/lib/storage';
+import { getConfigPath, getStatePath, assertWritable } from './paths';
 import type { AdminConfigData, AdminStateData } from './types';
 
 const SCRYPT_KEYLEN = 64;
@@ -60,16 +54,16 @@ function isHashed(value: string): boolean {
   return value.startsWith('$scrypt$') || value.startsWith('$2a$') || value.startsWith('$2b$');
 }
 
-// ─── Disk I/O ───────────────────────────────────────────────────────────────
+// ─── Storage I/O ────────────────────────────────────────────────────────────
 
-async function readJson<T>(filePath: string): Promise<T | null> {
+async function readJson<T>(key: string): Promise<T | null> {
   try {
-    const raw = await readFile(filePath, 'utf-8');
-    return JSON.parse(raw) as T;
+    const buf = await getStorage().get(key);
+    if (!buf) return null;
+    return JSON.parse(buf.toString('utf-8')) as T;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    logger.warn('Failed to read admin file', {
-      filePath,
+    logger.warn('Failed to read admin object', {
+      key,
       error: error instanceof Error ? error.message : 'Unknown error',
     });
     return null;
@@ -86,19 +80,11 @@ async function readStateData(): Promise<AdminStateData | null> {
 
 async function writeConfigData(data: AdminConfigData): Promise<void> {
   assertWritable('save admin password');
-  await ensureConfigDir();
-  const target = getConfigPath(ADMIN_CONFIG_FILE);
-  const tmp = target + '.tmp';
-  await writeFile(tmp, JSON.stringify(data, null, 2), 'utf-8');
-  await rename(tmp, target);
+  await getStorage().put(getConfigPath(ADMIN_CONFIG_FILE), JSON.stringify(data, null, 2));
 }
 
 async function writeStateData(data: AdminStateData): Promise<void> {
-  await ensureStateDir();
-  const target = getStatePath(ADMIN_STATE_FILE);
-  const tmp = target + '.tmp';
-  await writeFile(tmp, JSON.stringify(data, null, 2), 'utf-8');
-  await rename(tmp, target);
+  await getStorage().put(getStatePath(ADMIN_STATE_FILE), JSON.stringify(data, null, 2));
 }
 
 // ─── Cache & init ───────────────────────────────────────────────────────────
@@ -126,11 +112,11 @@ export async function initAdminPassword(): Promise<boolean> {
     cachedConfig = existingConfig;
     cachedState = (await readStateData()) ?? freshState();
     if (!(await readStateData())) {
-      // No state file yet (fresh install or migration); create it.
+      // No state object yet (fresh install or migration); create it.
       try {
         await writeStateData(cachedState);
       } catch {
-        /* state dir may not be writable yet during early boot probes */
+        /* state may not be writable yet during early boot probes */
       }
     }
     initialized = true;

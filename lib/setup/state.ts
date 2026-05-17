@@ -1,6 +1,7 @@
-import { existsSync } from 'node:fs';
 import { configManager } from '@/lib/admin/config-manager';
-import { getConfigPath, isConfigReadOnly } from '@/lib/admin/paths';
+import { isConfigReadOnly } from '@/lib/admin/paths';
+import { getStorage } from '@/lib/storage';
+import { getConfigPath } from '@/lib/admin/paths';
 
 /**
  * The three lifecycle states for the running container.
@@ -26,10 +27,10 @@ export function detectSetupState(): SetupState {
   if (process.env.JMAP_SERVER_URL && process.env.JMAP_SERVER_URL.trim() !== '') {
     return 'env-managed';
   }
-  // Read-only config dir + no setupComplete flag means the volume was
-  // mounted :ro before the wizard ran. Fall through to bootstrap so the
-  // failure (write attempt during wizard) surfaces with a clear error
-  // rather than silently 404'ing /setup.
+  // Read-only config + no setupComplete flag means the operator locked
+  // before the wizard ran. Fall through to bootstrap so the failure
+  // (write attempt during wizard) surfaces with a clear error rather
+  // than silently 404'ing /setup.
   if (isConfigReadOnly()) return 'bootstrap';
   return 'bootstrap';
 }
@@ -45,9 +46,9 @@ export function isSetupActive(): boolean {
  * The persisted `.config-locked` marker the wizard drops when the operator
  * checks "lock configuration after setup" on the review screen. Purely
  * advisory - the actual locking is the operator's `:ro` mount or the
- * ADMIN_CONFIG_READONLY env var. This file is what the admin UI uses to
- * remind the operator that they intended to lock.
+ * ADMIN_CONFIG_READONLY env var. This object's presence is what the admin
+ * UI uses to remind the operator that they intended to lock.
  */
-export function lockMarkerExists(): boolean {
-  return existsSync(getConfigPath('.config-locked'));
+export async function lockMarkerExists(): Promise<boolean> {
+  return getStorage().has(getConfigPath('.config-locked'));
 }

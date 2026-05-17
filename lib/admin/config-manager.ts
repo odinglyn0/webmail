@@ -1,8 +1,8 @@
-import { readFile, writeFile, rename } from 'node:fs/promises';
 import { logger } from '@/lib/logger';
 import { readFileEnv } from '@/lib/read-file-env';
+import { getStorage } from '@/lib/storage';
 import { CONFIG_ENV_MAP, DEFAULT_FEATURE_GATES, DEFAULT_POLICY, DEFAULT_THEME_POLICY, type SettingsPolicy } from './types';
-import { ensureConfigDir, getConfigPath, assertWritable } from './paths';
+import { getConfigPath, assertWritable } from './paths';
 
 function parseEnvValue(value: string, type: string): unknown {
   switch (type) {
@@ -28,10 +28,10 @@ class ConfigManager {
   private policyCache: SettingsPolicy = { ...DEFAULT_POLICY };
   private loaded = false;
 
-  /** Load admin config and policy from disk. Called once at startup and on reload. */
+  /** Load admin config and policy from storage. Called once at startup and on reload. */
   async load(): Promise<void> {
-    this.adminConfig = await this.readJsonFile('config.json') || {};
-    const policy = await this.readJsonFile('policy.json');
+    this.adminConfig = (await this.readJson('config.json')) || {};
+    const policy = await this.readJson('policy.json');
     if (policy) {
       this.policyCache = {
         ...DEFAULT_POLICY,
@@ -119,12 +119,12 @@ class ConfigManager {
   }
 
   /**
-   * Update admin config overrides. Writes to disk.
+   * Update admin config overrides. Persists to storage.
    */
   async setAdminConfig(updates: Record<string, unknown>): Promise<void> {
     assertWritable('update admin config');
     Object.assign(this.adminConfig, updates);
-    await this.writeJsonFile('config.json', this.adminConfig);
+    await this.writeJson('config.json', this.adminConfig);
   }
 
   /**
@@ -133,7 +133,7 @@ class ConfigManager {
   async removeAdminOverride(key: string): Promise<void> {
     assertWritable('remove admin override');
     delete this.adminConfig[key];
-    await this.writeJsonFile('config.json', this.adminConfig);
+    await this.writeJson('config.json', this.adminConfig);
   }
 
   /**
@@ -151,7 +151,7 @@ class ConfigManager {
   async markSetupComplete(): Promise<void> {
     assertWritable('mark setup complete');
     this.adminConfig.setupComplete = true;
-    await this.writeJsonFile('config.json', this.adminConfig);
+    await this.writeJson('config.json', this.adminConfig);
   }
 
   /**
@@ -162,7 +162,7 @@ class ConfigManager {
   }
 
   /**
-   * Update the settings policy. Writes to disk.
+   * Update the settings policy. Persists to storage.
    */
   async setPolicy(policy: SettingsPolicy): Promise<void> {
     assertWritable('update settings policy');
@@ -172,34 +172,30 @@ class ConfigManager {
       features: { ...DEFAULT_FEATURE_GATES, ...(policy.features || {}) },
       themePolicy: { ...DEFAULT_THEME_POLICY, ...(policy.themePolicy || {}) },
     };
-    await this.writeJsonFile('policy.json', this.policyCache as unknown as Record<string, unknown>);
+    await this.writeJson('policy.json', this.policyCache as unknown as Record<string, unknown>);
   }
 
   /**
-   * Reload config from disk (for manual file edits or multi-instance).
+   * Reload config from storage (for manual edits or multi-instance).
    */
   async reload(): Promise<void> {
     await this.load();
   }
 
-  private async readJsonFile(filename: string): Promise<Record<string, unknown> | null> {
-    const filePath = getConfigPath(filename);
+  private async readJson(filename: string): Promise<Record<string, unknown> | null> {
+    const key = getConfigPath(filename);
     try {
-      const raw = await readFile(filePath, 'utf-8');
-      return JSON.parse(raw);
+      const buf = await getStorage().get(key);
+      if (!buf) return null;
+      return JSON.parse(buf.toString('utf-8'));
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
       logger.warn(`Failed to read ${filename}`, { error: error instanceof Error ? error.message : 'Unknown error' });
       return null;
     }
   }
 
-  private async writeJsonFile(filename: string, data: Record<string, unknown>): Promise<void> {
-    await ensureConfigDir();
-    const targetPath = getConfigPath(filename);
-    const tmpPath = targetPath + '.tmp';
-    await writeFile(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
-    await rename(tmpPath, targetPath);
+  private async writeJson(filename: string, data: Record<string, unknown>): Promise<void> {
+    await getStorage().put(getConfigPath(filename), JSON.stringify(data, null, 2));
   }
 }
 

@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { writeFile, unlink, mkdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { detectSetupState } from '@/lib/setup/state';
 import { authenticateWizardRequest } from '@/lib/setup/session';
 import { configManager } from '@/lib/admin/config-manager';
-import { getConfigDir, assertWritable } from '@/lib/admin/paths';
+import { getConfigPath, assertWritable } from '@/lib/admin/paths';
+import { getStorage } from '@/lib/storage';
 import { logger } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
@@ -38,8 +37,8 @@ const EXT_BY_MIME: Record<string, string> = {
   'image/vnd.microsoft.icon': '.ico',
 };
 
-function getBrandingDir(): string {
-  return path.join(getConfigDir(), 'branding');
+function brandingKey(filename: string): string {
+  return getConfigPath(`branding/${filename}`);
 }
 
 function sanitizeFilename(name: string): string {
@@ -55,9 +54,8 @@ function sanitizeFilename(name: string): string {
  *
  * Mirrors /api/admin/branding but authenticates via the wizard cookie
  * instead of admin session - admin auth doesn't exist yet during bootstrap.
- * Files land in the same directory; the public read endpoint at
- * /api/admin/branding/<filename> serves both wizard- and admin-uploaded
- * assets after setup.
+ * The public read endpoint at /api/admin/branding/<filename> serves both
+ * wizard- and admin-uploaded assets after setup.
  */
 export async function POST(request: NextRequest) {
   if (detectSetupState() !== 'bootstrap') {
@@ -92,25 +90,20 @@ export async function POST(request: NextRequest) {
 
     const ext = EXT_BY_MIME[file.type] ?? '.png';
     const safeName = sanitizeFilename(`${slot}${ext}`);
+    const storage = getStorage();
 
-    const dir = getBrandingDir();
-    if (!existsSync(dir)) {
-      await mkdir(dir, { recursive: true });
-    }
-
-    // Remove any existing file for this slot with a different extension so
-    // the wizard doesn't leave orphan files behind on re-upload.
+    // Remove any existing object for this slot with a different extension
+    // so the wizard doesn't leave orphans behind on re-upload.
     for (const otherExt of Object.values(EXT_BY_MIME)) {
       if (otherExt === ext) continue;
-      const oldPath = path.join(dir, `${slot}${otherExt}`);
-      if (existsSync(oldPath)) {
-        try { await unlink(oldPath); } catch { /* ignore */ }
+      const oldKey = brandingKey(`${slot}${otherExt}`);
+      if (await storage.has(oldKey)) {
+        try { await storage.del(oldKey); } catch { /* ignore */ }
       }
     }
 
     const buffer = Buffer.from(await file.arrayBuffer());
-    const filePath = path.join(dir, safeName);
-    await writeFile(filePath, buffer);
+    await storage.put(brandingKey(safeName), buffer);
 
     const servedUrl = `/api/admin/branding/${safeName}`;
     await configManager.ensureLoaded();
@@ -146,11 +139,11 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid or missing slot' }, { status: 400 });
     }
 
-    const dir = getBrandingDir();
+    const storage = getStorage();
     for (const ext of Object.values(EXT_BY_MIME)) {
-      const filePath = path.join(dir, `${slot}${ext}`);
-      if (existsSync(filePath)) {
-        try { await unlink(filePath); } catch { /* ignore */ }
+      const key = brandingKey(`${slot}${ext}`);
+      if (await storage.has(key)) {
+        try { await storage.del(key); } catch { /* ignore */ }
       }
     }
 

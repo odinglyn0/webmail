@@ -1,18 +1,11 @@
-import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { logger } from '@/lib/logger';
+import { getStorage } from '@/lib/storage';
 import type { TelemetryStateFile, ConsentState } from './types';
 import { DEFAULT_ENDPOINT } from './types';
 
-function getDir(): string {
-  return process.env.TELEMETRY_DATA_DIR ||
-    path.join(process.cwd(), 'data', 'telemetry');
-}
-
-function statePath(): string { return path.join(getDir(), 'state.json'); }
-function idPath(): string { return path.join(getDir(), '.telemetry-id'); }
+const STATE_KEY = 'telemetry/state.json';
+const ID_KEY = 'telemetry/.telemetry-id';
 
 function envOverride(): ConsentState | null {
   const v = (process.env.BULWARK_TELEMETRY ?? '').toLowerCase();
@@ -24,20 +17,22 @@ function envOverride(): ConsentState | null {
   return null;
 }
 
+/** @deprecated Storage backend handles namespace creation. */
 export async function ensureDir(): Promise<void> {
-  if (!existsSync(getDir())) await mkdir(getDir(), { recursive: true });
+  // No-op
 }
 
 export async function getInstanceId(): Promise<string> {
-  await ensureDir();
+  const storage = getStorage();
   try {
-    const id = (await readFile(idPath(), 'utf8')).trim();
-    if (/^[0-9a-f-]{36}$/i.test(id)) return id;
+    const buf = await storage.get(ID_KEY);
+    if (buf) {
+      const id = buf.toString('utf-8').trim();
+      if (/^[0-9a-f-]{36}$/i.test(id)) return id;
+    }
   } catch { /* generate fresh */ }
   const fresh = randomUUID();
-  const tmp = idPath() + '.tmp';
-  await writeFile(tmp, fresh, 'utf8');
-  await rename(tmp, idPath());
+  await storage.put(ID_KEY, fresh);
   return fresh;
 }
 
@@ -53,34 +48,39 @@ const DEFAULTS: TelemetryStateFile = {
 };
 
 export async function loadState(): Promise<TelemetryStateFile> {
-  await ensureDir();
+  const storage = getStorage();
   try {
-    const raw = await readFile(statePath(), 'utf8');
-    const parsed = JSON.parse(raw) as Partial<TelemetryStateFile>;
-    return { ...DEFAULTS, ...parsed };
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-      logger.warn('telemetry: state read failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
+    const buf = await storage.get(STATE_KEY);
+    if (buf) {
+      const parsed = JSON.parse(buf.toString('utf-8')) as Partial<TelemetryStateFile>;
+      return { ...DEFAULTS, ...parsed };
     }
-    // First-ever load on a fresh install: persist the default-on state with
-    // an autoEnabledAt stamp so the admin UI can show "telemetry was
-    // auto-enabled at <time>; disable here" without re-arming on restart.
-    const fresh: TelemetryStateFile = {
-      ...DEFAULTS,
-      consentedAt: new Date().toISOString(),
-    };
-    await saveState(fresh);
-    return fresh;
+  } catch (err) {
+    logger.warn('telemetry: state read failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
+  // First-ever load: persist the default-on state with a consentedAt
+  // stamp so the admin UI can show "telemetry was auto-enabled at <time>"
+  // without re-arming on restart.
+  const fresh: TelemetryStateFile = {
+    ...DEFAULTS,
+    consentedAt: new Date().toISOString(),
+  };
+  try {
+    await saveState(fresh);
+  } catch (err) {
+    // Read-only or transient storage error: still return the in-memory
+    // default so callers can proceed; we'll retry persisting next call.
+    logger.warn('telemetry: failed to persist default state', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  return fresh;
 }
 
 export async function saveState(state: TelemetryStateFile): Promise<void> {
-  await ensureDir();
-  const tmp = statePath() + '.tmp';
-  await writeFile(tmp, JSON.stringify(state, null, 2), 'utf8');
-  await rename(tmp, statePath());
+  await getStorage().put(STATE_KEY, JSON.stringify(state, null, 2));
 }
 
 // Effective consent: env var wins over file. UI changes are blocked

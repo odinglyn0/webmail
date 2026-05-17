@@ -1,16 +1,19 @@
-import { readFile, writeFile, mkdir, rename, unlink } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import path from 'node:path';
 import { logger } from '@/lib/logger';
-import { getConfigDir, assertWritable } from './paths';
+import { getStorage } from '@/lib/storage';
+import { assertWritable } from './paths';
 
-function getPluginsDir(): string {
-  return path.join(getConfigDir(), 'plugins');
+const PLUGIN_REGISTRY_KEY = 'admin/plugins/registry.json';
+const THEME_REGISTRY_KEY = 'admin/themes/registry.json';
+
+function pluginBundleKey(id: string): string {
+  if (!/^[a-z0-9._-]+$/i.test(id)) throw new Error(`Invalid plugin id: ${id}`);
+  return `admin/plugins/${id}.js`;
 }
 
-function getThemesDir(): string {
-  return path.join(getConfigDir(), 'themes');
+function themeCssKey(id: string): string {
+  if (!/^[a-z0-9._-]+$/i.test(id)) throw new Error(`Invalid theme id: ${id}`);
+  return `admin/themes/${id}.css`;
 }
 
 // ─── Types ───────────────────────────────────────────────────
@@ -94,39 +97,27 @@ interface ThemeRegistry {
   themes: ServerTheme[];
 }
 
-// ─── Plugin Registry ─────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────
 
-async function ensureDir(dir: string): Promise<void> {
-  if (!existsSync(dir)) {
-    await mkdir(dir, { recursive: true });
-  }
-}
-
-async function readJsonFile<T>(filePath: string, fallback: T): Promise<T> {
+async function readJsonKey<T>(key: string, fallback: T): Promise<T> {
   try {
-    const raw = await readFile(filePath, 'utf-8');
-    return JSON.parse(raw);
+    const buf = await getStorage().get(key);
+    if (!buf) return fallback;
+    return JSON.parse(buf.toString('utf-8'));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return fallback;
-    logger.warn(`Failed to read ${filePath}`, { error: error instanceof Error ? error.message : 'Unknown error' });
+    logger.warn(`Failed to read ${key}`, { error: error instanceof Error ? error.message : 'Unknown error' });
     return fallback;
   }
 }
 
-async function writeJsonFile(filePath: string, data: unknown): Promise<void> {
-  const dir = path.dirname(filePath);
-  await ensureDir(dir);
-  const tmpPath = filePath + '.tmp';
-  await writeFile(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
-  await rename(tmpPath, filePath);
+async function writeJsonKey(key: string, data: unknown): Promise<void> {
+  await getStorage().put(key, JSON.stringify(data, null, 2));
 }
 
 // ─── Plugin Operations ───────────────────────────────────────
 
-const pluginRegistryPath = () => path.join(getPluginsDir(), 'registry.json');
-
 export async function getPluginRegistry(): Promise<PluginRegistry> {
-  return readJsonFile<PluginRegistry>(pluginRegistryPath(), { plugins: [] });
+  return readJsonKey<PluginRegistry>(PLUGIN_REGISTRY_KEY, { plugins: [] });
 }
 
 export async function getPlugin(id: string): Promise<ServerPlugin | null> {
@@ -139,12 +130,10 @@ export async function savePlugin(
   code: string,
 ): Promise<void> {
   assertWritable('install plugin');
-  const dir = getPluginsDir();
-  await ensureDir(dir);
+  const storage = getStorage();
 
   // Save code bundle
-  const bundlePath = path.join(dir, `${plugin.id}.js`);
-  await writeFile(bundlePath, code, 'utf-8');
+  await storage.put(pluginBundleKey(plugin.id), code);
 
   // Stamp content hash + updatedAt so clients can detect re-uploads even
   // when the manifest version hasn't changed. Preserve the original
@@ -165,7 +154,7 @@ export async function savePlugin(
   } else {
     registry.plugins.push(next);
   }
-  await writeJsonFile(pluginRegistryPath(), registry);
+  await writeJsonKey(PLUGIN_REGISTRY_KEY, registry);
 }
 
 export async function updatePluginMeta(id: string, updates: Partial<Pick<ServerPlugin, 'enabled' | 'forceEnabled'>>): Promise<ServerPlugin | null> {
@@ -175,7 +164,7 @@ export async function updatePluginMeta(id: string, updates: Partial<Pick<ServerP
   if (idx < 0) return null;
 
   registry.plugins[idx] = { ...registry.plugins[idx], ...updates, updatedAt: new Date().toISOString() };
-  await writeJsonFile(pluginRegistryPath(), registry);
+  await writeJsonKey(PLUGIN_REGISTRY_KEY, registry);
   return registry.plugins[idx];
 }
 
@@ -186,19 +175,18 @@ export async function deletePlugin(id: string): Promise<boolean> {
   if (idx < 0) return false;
 
   registry.plugins.splice(idx, 1);
-  await writeJsonFile(pluginRegistryPath(), registry);
+  await writeJsonKey(PLUGIN_REGISTRY_KEY, registry);
 
-  // Remove bundle file
-  const bundlePath = path.join(getPluginsDir(), `${id}.js`);
-  try { await unlink(bundlePath); } catch { /* ok if missing */ }
+  // Remove bundle
+  try { await getStorage().del(pluginBundleKey(id)); } catch { /* ok if missing */ }
 
   return true;
 }
 
 export async function getPluginBundle(id: string): Promise<string | null> {
-  const bundlePath = path.join(getPluginsDir(), `${id}.js`);
   try {
-    return await readFile(bundlePath, 'utf-8');
+    const buf = await getStorage().get(pluginBundleKey(id));
+    return buf ? buf.toString('utf-8') : null;
   } catch {
     return null;
   }
@@ -206,10 +194,8 @@ export async function getPluginBundle(id: string): Promise<string | null> {
 
 // ─── Theme Operations ────────────────────────────────────────
 
-const themeRegistryPath = () => path.join(getThemesDir(), 'registry.json');
-
 export async function getThemeRegistry(): Promise<ThemeRegistry> {
-  return readJsonFile<ThemeRegistry>(themeRegistryPath(), { themes: [] });
+  return readJsonKey<ThemeRegistry>(THEME_REGISTRY_KEY, { themes: [] });
 }
 
 export async function getTheme(id: string): Promise<ServerTheme | null> {
@@ -222,12 +208,10 @@ export async function saveTheme(
   css: string,
 ): Promise<void> {
   assertWritable('install theme');
-  const dir = getThemesDir();
-  await ensureDir(dir);
+  const storage = getStorage();
 
-  // Save CSS file
-  const cssPath = path.join(dir, `${theme.id}.css`);
-  await writeFile(cssPath, css, 'utf-8');
+  // Save CSS
+  await storage.put(themeCssKey(theme.id), css);
 
   // Update registry
   const registry = await getThemeRegistry();
@@ -237,7 +221,7 @@ export async function saveTheme(
   } else {
     registry.themes.push(theme);
   }
-  await writeJsonFile(themeRegistryPath(), registry);
+  await writeJsonKey(THEME_REGISTRY_KEY, registry);
 }
 
 export async function updateThemeMeta(id: string, updates: Partial<Pick<ServerTheme, 'enabled' | 'forceEnabled'>>): Promise<ServerTheme | null> {
@@ -247,7 +231,7 @@ export async function updateThemeMeta(id: string, updates: Partial<Pick<ServerTh
   if (idx < 0) return null;
 
   registry.themes[idx] = { ...registry.themes[idx], ...updates, updatedAt: new Date().toISOString() };
-  await writeJsonFile(themeRegistryPath(), registry);
+  await writeJsonKey(THEME_REGISTRY_KEY, registry);
   return registry.themes[idx];
 }
 
@@ -258,19 +242,17 @@ export async function deleteTheme(id: string): Promise<boolean> {
   if (idx < 0) return false;
 
   registry.themes.splice(idx, 1);
-  await writeJsonFile(themeRegistryPath(), registry);
+  await writeJsonKey(THEME_REGISTRY_KEY, registry);
 
-  // Remove CSS file
-  const cssPath = path.join(getThemesDir(), `${id}.css`);
-  try { await unlink(cssPath); } catch { /* ok if missing */ }
+  try { await getStorage().del(themeCssKey(id)); } catch { /* ok if missing */ }
 
   return true;
 }
 
 export async function getThemeCSS(id: string): Promise<string | null> {
-  const cssPath = path.join(getThemesDir(), `${id}.css`);
   try {
-    return await readFile(cssPath, 'utf-8');
+    const buf = await getStorage().get(themeCssKey(id));
+    return buf ? buf.toString('utf-8') : null;
   } catch {
     return null;
   }
