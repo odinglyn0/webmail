@@ -4,6 +4,7 @@ import { logger } from '@/lib/logger';
 import { decryptPayload } from '@/lib/auth/crypto';
 import { exchangeCodeForTokens } from '@/lib/oauth/token-exchange';
 import { refreshTokenCookieName, refreshTokenServerCookieName } from '@/lib/oauth/tokens';
+import { MAX_ACCOUNT_SLOTS } from '@/lib/account-utils';
 import { getCookieOptions } from '@/lib/oauth/cookie-config';
 
 const SSO_PENDING_COOKIE = 'sso_pending';
