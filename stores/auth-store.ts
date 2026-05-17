@@ -486,6 +486,7 @@ export const useAuthStore = create<AuthState>()(
 
           // Update account entry in case it already existed (addAccount is a no-op for existing accounts)
           accountStore.updateAccount(accountId, {
+            cookieSlot,
             authMode: effectiveAuthMode,
             rememberMe: !!rememberMe,
             isConnected: true,
