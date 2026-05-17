@@ -11,7 +11,7 @@ import { useSettingsStore } from './settings-store';
 import { useAccountStore } from './account-store';
 import { fetchConfig } from '@/hooks/use-config';
 import { debug } from '@/lib/debug';
-import { generateAccountId } from '@/lib/account-utils';
+import { generateAccountId, MAX_ACCOUNT_SLOTS } from '@/lib/account-utils';
 import { replaceWindowLocation, getPathPrefix, getLocaleFromPath, apiFetch } from '@/lib/browser-navigation';
 import { notifyParent } from '@/lib/iframe-bridge';
 import { snapshotAccount, restoreAccount, clearAllStores, evictAccount, evictAll } from '@/lib/account-state-manager';
@@ -630,7 +630,7 @@ export const useAuthStore = create<AuthState>()(
             ? sessionStorage.getItem('oauth_cookie_slot')
             : null;
           const pendingSlot = rawSlot !== null ? parseInt(rawSlot, 10) : NaN;
-          const slot = !isNaN(pendingSlot) && pendingSlot >= 0 && pendingSlot <= 4
+          const slot = !isNaN(pendingSlot) && pendingSlot >= 0 && pendingSlot < MAX_ACCOUNT_SLOTS
             ? pendingSlot
             : accountStore.getNextCookieSlot();
 
@@ -1350,7 +1350,7 @@ export const useAuthStore = create<AuthState>()(
                 }
               }
             } catch (err) {
-              debug.error(`Failed to restore account ${account.id}:`, err);
+              debug.error(`Failed to restore account ${account.email || account.username} on ${new URL(account.serverUrl).hostname}:`, err);
               if (isRateLimitError(err)) {
                 accountStore.updateAccount(account.id, {
                   isConnected: false,
