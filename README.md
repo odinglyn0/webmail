@@ -1,3 +1,6 @@
+# DO NOT USE THIS UNLESS YOU KNOW WHAT YOU ARE DOING, OTHERWISE GO BACK TO VANILLA [bulwarkmail/webmail](https://github.com/bulwarkmail/webmail)
+
+
 <div align="center">
 
 <picture>
