@@ -1,5 +1,10 @@
 # DO NOT USE THIS UNLESS YOU KNOW WHAT YOU ARE DOING, OTHERWISE GO BACK TO VANILLA [bulwarkmail/webmail](https://github.com/bulwarkmail/webmail)
 
+## What I changed:
+- Changed out the datastore to use Vercel Blobs instead of writing to a dir (if running on serverless becomes ephemeral) in the Docker container.
+- Killed Okta/SSO bugs.
+- Cleaned up a redirect issue and killed other auth bugs.
+
 
 <div align="center">
 
